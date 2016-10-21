@@ -164,9 +164,9 @@ class SudoerDarwin extends SudoerUnix {
           shCmd = `#!/bin/bash\n`,
           sudoCmd = `#!/bin/bash\n`
 
-      sudoCmd += `rm ${sudoScriptFile}\n`
-      sudoCmd += `osascript -e 'do shell script "/usr/bin/sudo -n -s ${cmdScriptFile}" with administrator privileges'\n`
-      sudoCmd += `rm ${cmdScriptFile}\n`
+      sudoCmd += `/bin/rm ${sudoScriptFile}\n`
+      sudoCmd += `/usr/bin/osascript -e 'do shell script "/usr/bin/sudo -n -s ${cmdScriptFile}" with administrator privileges'\n`
+      sudoCmd += `/bin/rm ${cmdScriptFile}\n`
 
       if (env.length) {
           shCmd += `export ${env.join('\nexport')}\n`;
