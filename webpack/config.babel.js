@@ -53,8 +53,6 @@ export default {
         new ShellPlugin({
             onBuildExit: [
                 `node ${babelNode} ./webpack/chmod.js ` +
-                    `${distPath}/bin/applet.app ` +
-                    `${distPath}/bin/applet.app/Contents/MacOS/applet ` +
                     `${distPath}/bin/gksudo`,
             ]
         })

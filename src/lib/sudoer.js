@@ -2,7 +2,7 @@ import {tmpdir} from 'os';
 import {watchFile, unwatchFile, unlink, createReadStream, createWriteStream} from 'fs';
 import {normalize, join, dirname} from 'path';
 import {createHash} from 'crypto';
-
+import {chmodSync} from 'fs'
 import {readFile, writeFile, exec, spawn, mkdir, stat} from '~/lib/utils';
 
 let {platform, env} = process;
@@ -100,16 +100,6 @@ class SudoerUnix extends Sudoer {
 
 class SudoerDarwin extends SudoerUnix {
 
-    constructor(options={}) {
-        super(options);
-        if (options.icns && typeof options.icns !== 'string') {
-            throw new Error('options.icns must be a string if provided.');
-        } else if (options.icns && options.icns.trim().length === 0) {
-            throw new Error('options.icns must be a non-empty string if provided.');
-        }
-        this.up = false;
-    }
-
     isValidName(name) {
         return /^[a-z0-9 ]+$/i.test(name) && name.trim().length > 0 && name.length < 70;
     }
@@ -138,9 +128,9 @@ class SudoerDarwin extends SudoerUnix {
             } catch (err) {
                 try {
                     // Prompt password
-                    await self.prompt();
+                    let scriptFile = await self.writeScript(command, [], options)
                     // Try once more
-                    result = await exec(sudoCommand, options);
+                    result = await exec(scriptFile, options);
                     resolve(result);
                 } catch (err) {
                     reject(err);
@@ -156,8 +146,8 @@ class SudoerDarwin extends SudoerUnix {
                 cp;
             await self.reset();
             // Prompt password
-            await self.prompt();
-            cp = spawn(bin, ['-n', '-s', '-E', [command, ...args].join(' ')], options);
+            let scriptFile = await self.writeScript(command, args, options)
+            cp = spawn(scriptFile, [], options);
             cp.on('error', async (err) => {
                 reject(err);
             });
@@ -166,103 +156,32 @@ class SudoerDarwin extends SudoerUnix {
         });
     }
 
-    async prompt() {
-        let self = this;
-        return new Promise(async (resolve, reject) => {
-            if (!self.tmpdir) {
-                return reject(
-                    new Error('Requires os.tmpdir() to be defined.')
-                );
-            }
-            if (!env.USER) {
-                return reject(
-                    new Error('Requires env[\'USER\'] to be defined.')
-                );
-            }
-            // Keep prompt in single instance
-            self.up = true;
-            // Read ICNS-icon and hash it
-            let icon = await self.readIcns(),
-                hash = self.hash(icon);
-            // Copy applet to temporary directory
-            let bindir = self.options.bindir || `${__dirname}/../bin`
-            let source = join(bindir, 'applet.app'),
-                target = join(self.tmpdir, hash, `${self.options.name}.app`);
-            try {
-                await mkdir(dirname(target));
-            } catch (err) {
-                if (err.code !== 'EEXIST') { return reject(err); }
-            }
-            try {
-                // Copy application to temporary directory
-                await self.copy(source, target);
-                // Create application icon from source
-                await self.icon(target);
-                // Create property list for application
-                await self.propertyList(target);
-                // Open UI dialog with password prompt
-                await self.open(target);
-                // Remove applet from temporary directory
-                await self.remove(target);
-            } catch (err) {
-                return reject(err);
-            }
-            return resolve(hash);
-        });
-    }
+    async writeScript(command, args, options) {
+      let self = this,
+          cmdScriptFile = `${self.tmpdir}/cmd-${Math.random()}.sh`,
+          sudoScriptFile = `${self.tmpdir}/sudo-${Math.random()}.sh`,
+          env = self.joinEnv(options),
+          shCmd = `#!/bin/bash\n`,
+          sudoCmd = `#!/bin/bash\n`
 
-    async icon(target) {
-        let self = this;
-        return new Promise(async (resolve, reject) => {
-            if (!this.options.icns) { return resolve(); }
-            let result = await self.copy(
-                this.options.icns,
-                join(target, 'Contents', 'Resources', 'applet.icns')
-            );
-            return resolve(result);
-        });
-    }
+      sudoCmd += `rm ${sudoScriptFile}\n`
+      sudoCmd += `osascript -e 'do shell script "/usr/bin/sudo -n -s ${cmdScriptFile}" with administrator privileges'\n`
+      sudoCmd += `rm ${cmdScriptFile}\n`
 
-    async open(target) {
-        let self = this;
-        return new Promise(async (resolve, reject) => {
-            target = self.escapeDoubleQuotes(normalize(target));
-            try {
-                let result = await exec(`open -n -W "${target}"`);
-                return resolve(result);
-            } catch (err) {
-                return reject(err);
-            }
-        });
-    }
+      if (env.length) {
+          shCmd += `export ${env.join('\nexport')}\n`;
+      }
+      if (args && args.length) {
+          shCmd += `${command} ${args.join(' ')}`;
+      } else {
+          shCmd += command;
+      }
 
-    async readIcns(icnsPath) {
-        return new Promise(async (resolve, reject) => {
-            // ICNS is supported only on Mac.
-            if (!icnsPath || platform !== 'darwin') {
-                return resolve(new Buffer(0));
-            }
-            try {
-                let data = await readFile(icnsPath);
-                return resolve(data);
-            } catch (err) {
-                return reject(err);
-            }
-        });
-    }
-
-    async propertyList(target) {
-        let self = this;
-        return new Promise(async (resolve, reject) => {
-            let path = self.escapeDoubleQuotes(join(target, 'Contents', 'Info.plist')),
-                key = self.escapeDoubleQuotes('CFBundleName'),
-                value = `${self.options.name} Password Prompt`;
-            if (/'/.test(value)) {
-                return reject(new Error('Value should not contain single quotes.'));
-            }
-            let result = await exec(`defaults write "${path}" "${key}" '${value}'`);
-            return resolve(result);
-        });
+      await writeFile(cmdScriptFile, shCmd);
+      await writeFile(sudoScriptFile, sudoCmd);
+      chmodSync(cmdScriptFile, '0777')
+      chmodSync(sudoScriptFile, '0777')
+      return sudoScriptFile
     }
 }
 
